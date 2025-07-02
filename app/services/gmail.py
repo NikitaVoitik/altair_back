@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 from datetime import datetime, timedelta
@@ -22,6 +23,125 @@ class GmailService:
         self.polling_interval = 30  # seconds
         self._polling_tasks = {}  # user_id -> asyncio.Task
         self.auto_start_polling = True  # Enable auto-start by default
+
+    async def auto_start_polling_for_new_user(self, user_id: str):
+        """Auto-start Gmail polling for a new user connection"""
+        if not self.auto_start_polling:
+            logger.info(f"Auto-start polling disabled, skipping for user {user_id}")
+            return
+
+        try:
+            await self.start_polling_for_user(user_id)
+            logger.info(f"Auto-started Gmail polling for user {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to auto-start Gmail polling for user {user_id}: {e}")
+            raise
+
+    async def start_polling_for_user(self, user_id: str):
+        """Start polling Gmail for a specific user"""
+        # Stop existing polling task if any
+        await self.stop_polling_for_user(user_id)
+
+        # Verify user has valid OAuth connection
+        oauth_account = await self._get_valid_oauth_account(user_id)
+        if not oauth_account:
+            raise Exception(f"No valid OAuth account found for user {user_id}")
+
+        # Create and start polling task
+        task = asyncio.create_task(self._poll_user_messages(user_id))
+        self._polling_tasks[user_id] = task
+        logger.info(f"Started Gmail polling for user {user_id}")
+
+    async def stop_polling_for_user(self, user_id: str):
+        """Stop polling Gmail for a specific user"""
+        if user_id in self._polling_tasks:
+            task = self._polling_tasks[user_id]
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            del self._polling_tasks[user_id]
+            logger.info(f"Stopped Gmail polling for user {user_id}")
+
+    async def _poll_user_messages(self, user_id: str):
+        """Continuously poll Gmail messages for a user"""
+        logger.info(f"Starting message polling for user {user_id}")
+
+        while True:
+            try:
+                # Get unread messages
+                messages = await self.get_user_messages(
+                    user_id=user_id,
+                    query="is:unread",
+                    max_results=10
+                )
+
+                # Process each message
+                for message in messages:
+                    try:
+                        email_content = self.extract_message_content(message)
+                        await self.process_and_classify_email(user_id, email_content)
+
+                        # Mark as read (optional)
+                        await self._mark_message_as_read(user_id, message.get("id"))
+
+                    except Exception as e:
+                        logger.error(f"Error processing message for user {user_id}: {e}")
+
+                # Wait for next polling interval
+                await asyncio.sleep(self.polling_interval)
+
+            except asyncio.CancelledError:
+                logger.info(f"Polling cancelled for user {user_id}")
+                break
+            except Exception as e:
+                logger.error(f"Error in polling loop for user {user_id}: {e}")
+                # Wait before retrying
+                await asyncio.sleep(self.polling_interval)
+
+    async def _mark_message_as_read(self, user_id: str, message_id: str):
+        """Mark a Gmail message as read"""
+        oauth_account = await self._get_valid_oauth_account(user_id)
+        if not oauth_account:
+            return
+
+        headers = {
+            "Authorization": f"Bearer {oauth_account.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        url = f"{self.base_url}/users/me/messages/{message_id}/modify"
+        data = {
+            "removeLabelIds": ["UNREAD"]
+        }
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(url, headers=headers, json=data)
+                if response.status_code != 200:
+                    logger.error(f"Failed to mark message as read: {response.status_code}")
+            except Exception as e:
+                logger.error(f"Error marking message as read: {e}")
+
+    async def get_polling_status(self, user_id: str) -> Dict[str, Any]:
+        """Get polling status for a user"""
+        is_polling = user_id in self._polling_tasks and not self._polling_tasks[user_id].done()
+        oauth_account = await self._get_valid_oauth_account(user_id)
+
+        return {
+            "is_polling": is_polling,
+            "has_oauth_connection": oauth_account is not None,
+            "polling_interval": self.polling_interval
+        }
+
+    async def shutdown(self):
+        """Shutdown all polling tasks"""
+        logger.info("Shutting down Gmail polling for all users")
+        for user_id in list(self._polling_tasks.keys()):
+            await self.stop_polling_for_user(user_id)
+
 
     async def get_user_messages(
             self,
