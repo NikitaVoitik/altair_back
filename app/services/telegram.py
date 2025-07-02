@@ -186,11 +186,8 @@ class TelegramClientService:
             if not message_text:
                 return
 
-            # Get sender information
-            sender = await message.get_sender()
-            sender_name = getattr(sender, 'first_name', 'Unknown')
-            if hasattr(sender, 'last_name') and sender.last_name:
-                sender_name += f" {sender.last_name}"
+            # Get sender information with fallbacks
+            sender_name = await self.get_sender_name(message, client)
 
             # Add sender context to message
             full_message = f"From {sender_name}: {message_text}"
@@ -200,6 +197,66 @@ class TelegramClientService:
 
         except Exception as e:
             logger.error(f"Error processing incoming message: {e}")
+
+    async def get_sender_name(self, message: TelegramMessage, client: TelegramClient) -> str:
+        """Get sender name with simple fallbacks"""
+        try:
+            # Try to get sender directly
+            try:
+                sender = await message.get_sender()
+                if sender:
+                    # Try to get name from sender
+                    if hasattr(sender, 'first_name') and sender.first_name:
+                        name = sender.first_name
+                        if hasattr(sender, 'last_name') and sender.last_name:
+                            name += f" {sender.last_name}"
+                        return name
+                    elif hasattr(sender, 'title') and sender.title:
+                        return sender.title
+                    elif hasattr(sender, 'username') and sender.username:
+                        return f"@{sender.username}"
+            except Exception:
+                pass
+
+            # Try to get sender by ID
+            if hasattr(message, 'sender_id') and message.sender_id:
+                try:
+                    sender = await client.get_entity(message.sender_id)
+                    if hasattr(sender, 'first_name') and sender.first_name:
+                        name = sender.first_name
+                        if hasattr(sender, 'last_name') and sender.last_name:
+                            name += f" {sender.last_name}"
+                        return name
+                    elif hasattr(sender, 'title') and sender.title:
+                        return sender.title
+                    elif hasattr(sender, 'username') and sender.username:
+                        return f"@{sender.username}"
+                except Exception:
+                    pass
+
+            # Try to get chat info
+            try:
+                chat = await message.get_chat()
+                if chat:
+                    if hasattr(chat, 'first_name') and chat.first_name:
+                        name = chat.first_name
+                        if hasattr(chat, 'last_name') and chat.last_name:
+                            name += f" {chat.last_name}"
+                        return name
+                    elif hasattr(chat, 'title') and chat.title:
+                        return chat.title
+            except Exception:
+                pass
+
+            # Use sender ID as fallback
+            if hasattr(message, 'sender_id') and message.sender_id:
+                return f"User {message.sender_id}"
+
+            return "Unknown Sender"
+
+        except Exception as e:
+            logger.error(f"Error getting sender name: {e}")
+            return "Unknown Sender"
 
     async def transcribe_voice_message(self, voice, client: TelegramClient) -> Optional[str]:
         """Transcribe a voice message using OpenAI"""

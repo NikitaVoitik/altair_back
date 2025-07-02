@@ -30,70 +30,67 @@ def read_items(
     Items are returned in descending order by creation date (latest first).
     """
 
-    # Base query conditions
-    base_conditions = []
-    if not current_user.is_superuser:
-        base_conditions.append(Item.owner_id == current_user.id)
+    # Determine if we need to join with ItemClassification
+    needs_classification_join = any([
+        category is not None,
+        priority is not None,
+        action_required is not None,
+        contact is not None
+    ])
 
-    # Search conditions
-    search_conditions = []
-    if search:
-        search_term = f"%{search}%"
-        search_conditions.extend([
-            Item.title.contains(search_term),
-            Item.description.contains(search_term),
-            Item.original_text.contains(search_term)
-        ])
-
-    # Filter conditions
-    filter_conditions = []
-    if source:
-        filter_conditions.append(Item.source == source)
-    if message_type:
-        filter_conditions.append(Item.message_type == message_type)
-
-    # Classification filter conditions
-    classification_conditions = []
-    if category is not None:
-        classification_conditions.append(ItemClassification.category == category)
-    if priority is not None:
-        classification_conditions.append(ItemClassification.priority == priority)
-    if action_required is not None:
-        classification_conditions.append(ItemClassification.action_required == action_required)
-    if contact is not None:
-        # Simple string comparison for single contact field
-        classification_conditions.append(ItemClassification.contact.contains(contact))
-
-    # Build the query
-    if classification_conditions:
-        # Join with ItemClassification when filtering by classification fields
-        base_query = select(Item).join(ItemClassification, Item.id == ItemClassification.item_id, isouter=False)
-        count_query = select(func.count(Item.id)).join(ItemClassification, Item.id == ItemClassification.item_id,
-                                                       isouter=False)
-
-        # Add classification conditions
-        if classification_conditions:
-            base_query = base_query.where(and_(*classification_conditions))
-            count_query = count_query.where(and_(*classification_conditions))
+    # Build base query with optional join
+    if needs_classification_join:
+        base_query = select(Item).join(ItemClassification, Item.id == ItemClassification.item_id)
+        count_query = select(func.count(Item.id)).join(ItemClassification, Item.id == ItemClassification.item_id)
     else:
-        # Regular query without classification join
         base_query = select(Item)
         count_query = select(func.count(Item.id))
 
-    # Apply base conditions (user ownership)
-    if base_conditions:
-        base_query = base_query.where(and_(*base_conditions))
-        count_query = count_query.where(and_(*base_conditions))
+    # Collect all WHERE conditions
+    conditions = []
 
-    # Apply search conditions
-    if search_conditions:
-        base_query = base_query.where(or_(*search_conditions))
-        count_query = count_query.where(or_(*search_conditions))
+    # User ownership conditions
+    if not current_user.is_superuser:
+        conditions.append(Item.owner_id == current_user.id)
 
-    # Apply filter conditions
-    if filter_conditions:
-        base_query = base_query.where(and_(*filter_conditions))
-        count_query = count_query.where(and_(*filter_conditions))
+    # Search conditions (OR together, then AND with other conditions)
+    if search:
+        search_term = f"%{search.strip()}%"
+        search_conditions = [
+            Item.title.ilike(search_term),
+            Item.description.ilike(search_term),
+            Item.original_text.ilike(search_term)
+        ]
+        conditions.append(or_(*search_conditions))
+
+    # Basic item filters with partial matching
+    if source:
+        source_term = f"%{source.strip()}%"
+        conditions.append(Item.source.ilike(source_term))
+
+    if message_type:
+        message_type_term = f"%{message_type.strip()}%"
+        conditions.append(Item.message_type.ilike(message_type_term))
+
+    # Classification filters (only if we have the join)
+    if needs_classification_join:
+        if category is not None:
+            conditions.append(ItemClassification.category == category)
+
+        if priority is not None:
+            conditions.append(ItemClassification.priority == priority)
+
+        if action_required is not None:
+            conditions.append(ItemClassification.action_required == action_required)
+
+        if contact is not None:
+            contact_term = f"%{contact.strip()}%"
+            conditions.append(ItemClassification.contact.ilike(contact_term))
+
+    # Apply all conditions
+    if conditions:
+        base_query = base_query.where(and_(*conditions))
+        count_query = count_query.where(and_(*conditions))
 
     # Order by created_at descending (latest first) and apply pagination
     base_query = base_query.order_by(Item.created_at.desc()).offset(skip).limit(limit)
