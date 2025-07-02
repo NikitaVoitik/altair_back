@@ -101,6 +101,7 @@ async def create_or_update_oauth_account(
         session: Session, user_id: str, token_data: Dict[str, Any], user_info: GoogleOAuthUserInfo
 ) -> OAuthAccount:
     """Create or update OAuth account for a user."""
+    print(f"DEBUG: Starting create_or_update_oauth_account for user {user_id}")
     # Import here to avoid circular imports
     from .gmail import gmail_service
 
@@ -143,6 +144,7 @@ async def create_or_update_oauth_account(
         session.add(oauth_account)
 
     session.commit()
+    print(f"DEBUG: Successfully saved OAuth account to database")
     session.refresh(oauth_account)
 
     # Auto-start Gmail polling for new connections

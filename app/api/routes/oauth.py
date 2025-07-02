@@ -68,7 +68,7 @@ async def google_oauth_callback(
         user_info = await google_oauth_service.get_user_info(token_data["access_token"])
 
         # Create or update OAuth account
-        oauth_account = create_or_update_oauth_account(
+        oauth_account = await create_or_update_oauth_account(
             session, uuid.UUID(user_id), token_data, user_info
         )
 
